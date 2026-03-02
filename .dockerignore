@@ -1,0 +1,21 @@
+# Test artifacts
+tests/
+test_repos/
+
+# Snapshots and reports generated at runtime
+.drift_baseline.json
+drift_report.json
+.drift_env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dev/CI files not needed in the image
+.github/
+.git/
+*.md
+Dockerfile
+.dockerignore

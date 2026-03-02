@@ -1,0 +1,76 @@
+name: "Structural Drift"
+description: "Detects architectural drift in Python repos. Posts a structured PR comment. Fails CI when score delta breaches a configurable threshold."
+author: "structural-drift-engine"
+
+branding:
+  icon: "activity"
+  color: "orange"
+
+inputs:
+  path:
+    description: "Path to the Python repository to analyse, relative to GITHUB_WORKSPACE."
+    required: false
+    default: "."
+
+  threshold:
+    description: "Dependency count above which a module is flagged as high-coupling."
+    required: false
+    default: "10"
+
+  drift_threshold:
+    description: >
+      Minimum acceptable score delta vs baseline.
+      The Action fails if the delta drops below this value.
+      Use a negative integer, e.g. -5 means 'fail if score drops more than 5 points'.
+    required: false
+    default: "-5"
+
+  save_snapshot:
+    description: "Save current results as the new baseline snapshot (true/false)."
+    required: false
+    default: "false"
+
+  post_pr_comment:
+    description: "Post or update a structured drift report comment on the PR (true/false)."
+    required: false
+    default: "true"
+
+  upload_report:
+    description: "Upload drift_report.json as a workflow artifact (true/false)."
+    required: false
+    default: "true"
+
+outputs:
+  drift_score:
+    description: "Computed drift score (0–100)."
+    value: ${{ steps.drift.outputs.drift_score }}
+
+  score_delta:
+    description: "Score change vs baseline (empty string if no baseline exists)."
+    value: ${{ steps.drift.outputs.score_delta }}
+
+  violations_count:
+    description: "Total boundary violations detected."
+    value: ${{ steps.drift.outputs.violations_count }}
+
+  cycles_count:
+    description: "Total circular dependencies detected."
+    value: ${{ steps.drift.outputs.cycles_count }}
+
+runs:
+  using: "docker"
+  image: "Dockerfile"
+  args:
+    - "--path"
+    - "/github/workspace/${{ inputs.path }}"
+    - "--threshold"
+    - ${{ inputs.threshold }}
+    - "--drift-threshold"
+    - ${{ inputs.drift_threshold }}
+    - "--output-env"
+    - ${{ inputs.save_snapshot == 'true' && '--save-snapshot' || '--no-snapshot' }}
+    - ${{ inputs.post_pr_comment == 'true' && '--pr-comment' || '' }}
+  env:
+    GITHUB_TOKEN: ${{ github.token }}
+    GITHUB_REPOSITORY: ${{ github.repository }}
+    PR_NUMBER: ${{ github.event.pull_request.number }}

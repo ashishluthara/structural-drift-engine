@@ -1,0 +1,96 @@
+name: Structural Drift Check
+
+on:
+  pull_request:
+    branches: ["main", "master"]
+    paths:
+      - "**.py"        # Only trigger when Python files change
+
+  push:
+    branches: ["main", "master"]
+    paths:
+      - "**.py"
+
+# Only one drift run at a time per PR (cancels stale runs on force-push)
+concurrency:
+  group: drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── PR drift check ─────────────────────────────────────────────────────────
+  drift-check:
+    name: Analyse Architectural Drift
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    permissions:
+      pull-requests: write   # Required to post PR comments
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch the base branch too so snapshot comparison works
+          fetch-depth: 0
+
+      - name: Restore baseline snapshot
+        # Pull .drift_baseline.json from the target branch so we can diff against it
+        run: |
+          git show origin/${{ github.base_ref }}:.drift_baseline.json \
+            > .drift_baseline.json 2>/dev/null || echo "No baseline on target branch"
+
+      - name: Run Structural Drift
+        id: drift
+        uses: ./          # Points to action.yml at repo root
+        with:
+          path: "."
+          threshold: "10"
+          drift_threshold: "-5"
+          save_snapshot: "false"
+          post_pr_comment: "true"
+          upload_report: "true"
+
+      - name: Annotate score in job summary
+        if: always()
+        run: |
+          echo "## Structural Drift" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Drift Score | **${{ steps.drift.outputs.drift_score }}** / 100 |" >> $GITHUB_STEP_SUMMARY
+          echo "| Score Delta | ${{ steps.drift.outputs.score_delta }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cycles | ${{ steps.drift.outputs.cycles_count }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Violations | ${{ steps.drift.outputs.violations_count }} |" >> $GITHUB_STEP_SUMMARY
+
+  # ── Baseline update on merge to main ───────────────────────────────────────
+  update-baseline:
+    name: Update Drift Baseline
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Structural Drift (save snapshot)
+        uses: ./
+        with:
+          path: "."
+          save_snapshot: "true"
+          post_pr_comment: "false"
+          upload_report: "false"
+
+      - name: Commit updated baseline
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .drift_baseline.json
+          git diff --cached --quiet && echo "Baseline unchanged." && exit 0
+          git commit -m "chore: update drift baseline [skip ci]"
+          git push
