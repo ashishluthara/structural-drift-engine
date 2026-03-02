@@ -2,21 +2,38 @@
 scanner.py — Repository Scanner
 
 Recursively scans a Python repository and returns all relevant .py file paths.
-Ignores virtual environments, git internals, and cache directories.
+Respects DriftConfig for test directory exclusion.
 """
 
 import os
 from pathlib import Path
 
-IGNORED_DIRS = {"venv", ".venv", ".git", "__pycache__", ".mypy_cache", ".tox", "dist", "build", "egg-info"}
+IGNORED_DIRS = {
+    "venv", ".venv", ".git", "__pycache__", ".mypy_cache",
+    ".tox", "dist", "build", ".eggs", "node_modules",
+}
+
+TEST_DIR_PATTERNS = {
+    "tests", "test", "testing", "spec", "specs", "_test", "test_",
+}
 
 
-def scan_repository(root_path: str) -> list[str]:
+def _is_test_dir(dirname: str) -> bool:
+    """Return True if a directory name looks like a test directory."""
+    lower = dirname.lower()
+    return lower in TEST_DIR_PATTERNS or lower.startswith("test_")
+
+
+def scan_repository(
+    root_path: str,
+    ignore_test_dirs: bool = True,
+) -> list[str]:
     """
     Recursively scan a directory for Python source files.
 
     Args:
         root_path: Absolute or relative path to the repository root.
+        ignore_test_dirs: If True, skip directories that look like test dirs.
 
     Returns:
         Sorted list of .py file paths relative to root_path.
@@ -34,14 +51,22 @@ def scan_repository(root_path: str) -> list[str]:
     py_files = []
 
     for dirpath, dirnames, filenames in os.walk(root):
-        # Prune ignored directories in-place to prevent descending into them
-        dirnames[:] = [
-            d for d in dirnames
-            if d not in IGNORED_DIRS and not d.endswith(".egg-info")
-        ]
+        pruned = []
+        for d in dirnames:
+            if d in IGNORED_DIRS or d.endswith(".egg-info"):
+                continue
+            if ignore_test_dirs and _is_test_dir(d):
+                continue
+            pruned.append(d)
+        dirnames[:] = pruned
 
         for filename in filenames:
             if filename.endswith(".py"):
+                # Skip test files at the top level too
+                if ignore_test_dirs and (
+                    filename.startswith("test_") or filename.endswith("_test.py")
+                ):
+                    continue
                 full_path = Path(dirpath) / filename
                 relative_path = full_path.relative_to(root)
                 py_files.append(str(relative_path))
@@ -54,19 +79,12 @@ def file_path_to_module_name(file_path: str) -> str:
     Convert a relative file path to a Python module name.
 
     Example:
-        billing/service.py  →  billing.service
-        main.py             →  main
-
-    Args:
-        file_path: Relative file path string (e.g. "billing/service.py").
-
-    Returns:
-        Dot-separated module name string.
+        billing/service.py  ->  billing.service
+        main.py             ->  main
     """
     path = Path(file_path)
     parts = list(path.parts)
 
-    # Strip __init__ suffix — treat it as its package name
     if parts[-1] == "__init__.py":
         parts = parts[:-1]
     else:
