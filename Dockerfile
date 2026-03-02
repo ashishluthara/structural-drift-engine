@@ -20,7 +20,10 @@ COPY --chown=drift:drift \
     snapshot.py \
     utils.py \
     pr_comment.py \
+    entrypoint.sh \
     ./
+
+RUN chmod +x /app/entrypoint.sh
 
 # Runtime mount point for the target repository
 RUN mkdir -p /repo && chown drift:drift /repo

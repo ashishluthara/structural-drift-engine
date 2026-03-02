@@ -60,16 +60,7 @@ outputs:
 runs:
   using: "docker"
   image: "Dockerfile"
-  args:
-    - "--path"
-    - "/github/workspace/${{ inputs.path }}"
-    - "--threshold"
-    - ${{ inputs.threshold }}
-    - "--drift-threshold"
-    - ${{ inputs.drift_threshold }}
-    - "--output-env"
-    - ${{ inputs.save_snapshot == 'true' && '--save-snapshot' || '--no-snapshot' }}
-    - ${{ inputs.post_pr_comment == 'true' && '--pr-comment' || '' }}
+  entrypoint: "/app/entrypoint.sh"
   env:
     GITHUB_TOKEN: ${{ github.token }}
     GITHUB_REPOSITORY: ${{ github.repository }}
