@@ -155,7 +155,7 @@ jobs:
             > .drift_baseline.json 2>/dev/null || true
 
       - name: Run Structural Drift
-        uses: your-org/structural-drift-engine@v1
+        uses: ashishluthara/structural-drift-engine@v1
         with:
           path: "."
           threshold: "10"
