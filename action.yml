@@ -19,11 +19,10 @@ inputs:
 
   drift_threshold:
     description: >
-      Minimum acceptable score delta vs baseline.
-      The Action fails if the delta drops below this value.
-      Use a negative integer, e.g. -5 means 'fail if score drops more than 5 points'.
+      Maximum points the drift score may drop vs baseline before CI fails.
+      Use a positive integer. e.g. 5 means fail if score drops more than 5 points.
     required: false
-    default: "-5"
+    default: "5"
 
   save_snapshot:
     description: "Save current results as the new baseline snapshot (true/false)."

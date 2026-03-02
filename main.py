@@ -11,7 +11,7 @@ Options:
     --no-snapshot     Skip snapshot loading and saving entirely.
     --output-env      Write key outputs to .drift_env (used by GitHub Actions).
     --pr-comment      Post/update a structured comment on the current PR.
-    --drift-threshold Minimum acceptable score delta before CI fails (default: -5).
+    --max-drop Max points score may drop vs baseline before CI fails (default: 5).
 """
 
 import argparse
@@ -55,8 +55,8 @@ def parse_args() -> argparse.Namespace:
                         help="Write key outputs to .drift_env for GitHub Actions.")
     parser.add_argument("--pr-comment", action="store_true",
                         help="Post/update a structured comment on the current GitHub PR.")
-    parser.add_argument("--drift-threshold", type=int, default=-5,
-                        help="Minimum acceptable score delta before CI fails (default: -5).")
+    parser.add_argument("--max-drop", type=int, default=5,
+                        help="Max points the score may drop vs baseline before CI fails (default: 5).")
     return parser.parse_args()
 
 
@@ -169,7 +169,7 @@ def main() -> None:
             violations=violations,
             coupling_metrics=coupling_metrics,
             penalty_breakdown=drift_result["penalty_breakdown"],
-            drift_threshold=args.drift_threshold,
+            max_drop=args.max_drop,
         )
 
     # -- JSON report ----------------------------------------------------------

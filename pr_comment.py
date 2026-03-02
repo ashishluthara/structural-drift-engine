@@ -110,7 +110,7 @@ def _build_comment_body(
     violations: list[dict],
     coupling_metrics: dict,
     penalty_breakdown: dict,
-    drift_threshold: int,
+    max_drop: int,
 ) -> str:
     """
     Render the PR comment as GitHub-flavored Markdown.
@@ -122,7 +122,7 @@ def _build_comment_body(
         violations: Boundary violations.
         coupling_metrics: Coupling metrics dict.
         penalty_breakdown: Penalty breakdown dict from drift result.
-        drift_threshold: Threshold for failure (negative int, e.g. -5).
+        max_drop: Max points score may drop before CI fails (e.g. 5 = fail if score drops > 5).
 
     Returns:
         Full markdown string ready to post as a GitHub comment.
@@ -141,7 +141,7 @@ def _build_comment_body(
     elif score_delta > 0:
         delta_line = f"↑ **+{score_delta}** from baseline"
     elif score_delta < 0:
-        breach = score_delta < drift_threshold
+        breach = score_delta < -max_drop
         marker = " ⚠️ **threshold breached**" if breach else ""
         delta_line = f"↓ **{score_delta}** from baseline{marker}"
     else:
@@ -237,7 +237,7 @@ def post_pr_comment(
     violations: list,
     coupling_metrics: dict,
     penalty_breakdown: dict,
-    drift_threshold: int = -5,
+    max_drop: int = 5,
 ) -> bool:
     """
     Post or update a drift report comment on the current pull request.
@@ -252,7 +252,7 @@ def post_pr_comment(
         violations: Detected violations.
         coupling_metrics: Coupling metrics dict.
         penalty_breakdown: Penalty breakdown from drift result.
-        drift_threshold: Minimum acceptable delta before CI fails (default -5).
+        max_drop: Max points score may drop vs baseline before CI fails (default 5).
 
     Returns:
         True if the threshold was breached (caller should exit 1).
@@ -278,7 +278,7 @@ def post_pr_comment(
         violations=violations,
         coupling_metrics=coupling_metrics,
         penalty_breakdown=penalty_breakdown,
-        drift_threshold=drift_threshold,
+        max_drop=max_drop,
     )
 
     existing_id = _find_existing_comment(token, repo, pr_number)
@@ -297,9 +297,9 @@ def post_pr_comment(
         return False
 
     # Determine threshold breach
-    if score_delta is not None and score_delta < drift_threshold:
+    if score_delta is not None and score_delta < -max_drop:
         print(
-            f"  [FAIL] Score delta {score_delta} breaches threshold {drift_threshold}."
+            f"  [FAIL] Score delta {score_delta} breaches max-drop threshold of -{max_drop}."
         )
         return True
 
