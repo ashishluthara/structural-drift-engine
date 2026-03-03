@@ -1,5 +1,5 @@
 """
-utils.py — Terminal Output & JSON Report Writer
+utils.py — Terminal Output & JSON Report Writer  (Phase 3)
 """
 
 import json
@@ -13,28 +13,36 @@ def write_json_report(
     graph: dict,
     coupling_metrics: dict,
     cycles: list,
+    approved_cycles: list,
     violations: list,
+    approved_exceptions: list,
     duplicate_pairs: list,
     complexity_summary: dict,
     drift_index_result: dict,
     comparison: dict | None,
+    trend_analytics: dict,
 ) -> str:
     report = {
-        "drift_index": drift_index_result["drift_index"],
-        "drift_index_components": drift_index_result["components"],
-        "coupling_metrics": coupling_metrics,
-        "circular_dependencies": cycles,
-        "boundary_violations": violations,
-        "duplicate_modules": duplicate_pairs,
-        "complexity": complexity_summary,
-        "dependency_graph": graph,
-        "snapshot_comparison": comparison,
+        "drift_index":             drift_index_result["drift_index"],
+        "raw_score":               drift_index_result.get("raw_score"),
+        "severity":                drift_index_result.get("severity"),
+        "drift_index_components":  drift_index_result["components"],
+        "smoothing_applied":       drift_index_result.get("smoothing_applied", False),
+        "drop_capped":             drift_index_result.get("drop_capped", False),
+        "size_scale":              drift_index_result.get("size_scale"),
+        "coupling_metrics":        coupling_metrics,
+        "circular_dependencies":   cycles,
+        "approved_cycles":         approved_cycles,
+        "boundary_violations":     violations,
+        "approved_exceptions":     approved_exceptions,
+        "duplicate_modules":       duplicate_pairs,
+        "complexity":              complexity_summary,
+        "dependency_graph":        graph,
+        "snapshot_comparison":     comparison,
+        "trend":                   trend_analytics,
     }
     report_path = Path(output_path) / REPORT_FILENAME
-    try:
-        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    except OSError as exc:
-        raise RuntimeError(f"Failed to write report: {exc}") from exc
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return str(report_path)
 
 
@@ -43,7 +51,13 @@ def print_header(title: str) -> None:
     print("=" * len(title))
 
 
-def print_drift_index(index: int, severity: str, comparison: dict | None) -> None:
+def print_drift_index(
+    index: int,
+    severity: str,
+    comparison: dict | None,
+    drift_result: dict,
+    trend_analytics: dict,
+) -> None:
     if comparison is None:
         delta_str = ""
     elif comparison["index_delta"] > 0:
@@ -53,16 +67,67 @@ def print_drift_index(index: int, severity: str, comparison: dict | None) -> Non
     else:
         delta_str = "  (no change from baseline)"
 
-    if index >= 80:
-        icon = "🟢"
-    elif index >= 60:
-        icon = "🟡"
-    elif index >= 40:
-        icon = "🟠"
-    else:
-        icon = "🔴"
+    # 5-run average delta
+    ma = trend_analytics.get("moving_avg")
+    ma_str = f"  {_ma_delta_str(index, ma)}" if ma is not None else ""
 
-    print(f"\n{icon}  Drift Index: {index}  —  {severity}{delta_str}")
+    if index >= 80:   icon = "🟢"
+    elif index >= 60: icon = "🟡"
+    elif index >= 40: icon = "🟠"
+    else:             icon = "🔴"
+
+    print(f"\n{icon}  Drift Index: {index}  —  {severity}{delta_str}{ma_str}")
+
+    if drift_result.get("drop_capped"):
+        print(f"  ⚠️  {drift_result['drop_cap_message']}")
+    if drift_result.get("smoothing_applied"):
+        raw = drift_result.get("raw_score")
+        print(f"  (Raw structural score: {raw}  ·  Smoothed with 7-run MA)")
+
+
+def _ma_delta_str(index: int, ma: float) -> str:
+    diff = round(index - ma, 1)
+    if diff > 0:   return f"(+{diff} vs 7-run avg)"
+    if diff < 0:   return f"({diff} vs 7-run avg)"
+    return ""
+
+
+def print_trend(trend_analytics: dict) -> None:
+    n = trend_analytics.get("run_count", 0)
+    if n < 2:
+        return
+
+    print("\nDrift Trend:")
+    ts = trend_analytics.get("trend_string", "")
+    if ts:
+        print(f"  {ts}")
+    label = trend_analytics.get("trend_label", "")
+    if label:
+        print(f"  Trend: {label}")
+
+    volatility = trend_analytics.get("volatility", 0.0)
+    if trend_analytics.get("high_volatility"):
+        print(f"  ⚠️  Drift volatility high (σ={volatility}). Scoring instability detected.")
+    else:
+        print(f"  Volatility: {'Low' if volatility < 2.0 else 'Moderate'}  (σ={volatility})")
+
+    # % change summary
+    pct = trend_analytics.get("pct_changes", {})
+    if pct:
+        parts = []
+        if "coupling_pct" in pct and abs(pct["coupling_pct"]) >= 5:
+            parts.append(f"coupling {_pct_str(pct['coupling_pct'])}")
+        if "complexity_pct" in pct and abs(pct["complexity_pct"]) >= 5:
+            parts.append(f"complexity {_pct_str(pct['complexity_pct'])}")
+        if "duplication_pct" in pct and abs(pct["duplication_pct"]) >= 5:
+            parts.append(f"duplication {_pct_str(pct['duplication_pct'])}")
+        if parts:
+            print(f"  % Change vs avg:  {',  '.join(parts)}")
+
+
+def _pct_str(pct: float) -> str:
+    sign = "+" if pct >= 0 else ""
+    return f"{sign}{pct}%"
 
 
 def print_cycles(cycles: list) -> None:
@@ -72,6 +137,16 @@ def print_cycles(cycles: list) -> None:
         return
     for cycle in cycles:
         print("  - " + " → ".join(cycle))
+
+
+def print_approved_exceptions(approved_cycles: list, approved_violations: list) -> None:
+    if not approved_cycles and not approved_violations:
+        return
+    print("\nApproved Architectural Exceptions:")
+    for ac in approved_cycles:
+        print(f"  ✓ {ac['label']}  (cycle — approved in config)")
+    for av in approved_violations:
+        print(f"  ✓ {av['source']} → {av['target']}  (violation — approved in config)")
 
 
 def print_high_coupling(modules: list, high_coupling_percentile: int) -> None:
@@ -118,35 +193,19 @@ def print_comparison(comparison: dict) -> None:
     print("\nChanges Since Baseline:")
     printed = False
 
-    if comparison["new_cycles"]:
-        printed = True
-        print("  New Cycles:")
-        for c in comparison["new_cycles"]:
-            print("    + " + " → ".join(c))
-
-    if comparison["resolved_cycles"]:
-        printed = True
-        print("  Resolved Cycles:")
-        for c in comparison["resolved_cycles"]:
-            print("    ✓ " + " → ".join(c))
-
-    if comparison["new_violations"]:
-        printed = True
-        print("  New Violations:")
-        for v in comparison["new_violations"]:
-            print(f"    + {v['source']} → {v['target']}")
-
-    if comparison["resolved_violations"]:
-        printed = True
-        print("  Resolved Violations:")
-        for v in comparison["resolved_violations"]:
-            print(f"    ✓ {v['source']} → {v['target']}")
-
-    if comparison["new_duplicates"]:
-        printed = True
-        print("  New Duplicate Pairs:")
-        for d in comparison["new_duplicates"]:
-            print(f"    + {d['module_a']} ↔ {d['module_b']}")
+    for section, items, fmt in [
+        ("New Cycles",            comparison["new_cycles"],          lambda c: " → ".join(c)),
+        ("Resolved Cycles",       comparison["resolved_cycles"],     lambda c: " → ".join(c)),
+        ("New Violations",        comparison["new_violations"],      lambda v: f"{v['source']} → {v['target']}"),
+        ("Resolved Violations",   comparison["resolved_violations"], lambda v: f"{v['source']} → {v['target']}"),
+        ("New Duplicate Pairs",   comparison["new_duplicates"],      lambda d: f"{d['module_a']} ↔ {d['module_b']}"),
+    ]:
+        if items:
+            printed = True
+            prefix = "✓" if "Resolved" in section else "+"
+            print(f"  {section}:")
+            for item in items:
+                print(f"    {prefix} {fmt(item)}")
 
     if comparison.get("complexity_increases"):
         printed = True
@@ -158,8 +217,8 @@ def print_comparison(comparison: dict) -> None:
         print("  ✓ No structural changes detected")
 
 
-def print_index_breakdown(components: dict) -> None:
-    print("\nDrift Index Breakdown:")
+def print_index_breakdown(components: dict, size_scale: float) -> None:
+    print(f"\nDrift Index Breakdown:  (size scale: {size_scale}×)")
     cp = components.get("circular_penalty", {})
     kp = components.get("coupling_penalty", {})
     dp = components.get("duplication_penalty", {})
@@ -167,4 +226,5 @@ def print_index_breakdown(components: dict) -> None:
     print(f"  Circular deps   : −{cp.get('value',0)}  ({cp.get('count',0)} cycles)")
     print(f"  High coupling   : −{kp.get('value',0)}  (avg {kp.get('avg_percentile',0)}th pct)")
     print(f"  Duplication     : −{dp.get('value',0)}  ({dp.get('count',0)} pairs)")
-    print(f"  Complexity Δ    : −{xp.get('value',0)}  (+{xp.get('total_positive_delta',0)} total)")
+    suppressed = " (suppressed — first run)" if xp.get("suppressed") else ""
+    print(f"  Complexity Δ    : −{xp.get('value',0)}  (+{xp.get('total_positive_delta',0)} total){suppressed}")

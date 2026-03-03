@@ -1,16 +1,16 @@
 """
-main.py — Structural Drift Engine CLI v2
+main.py — Structural Drift Engine CLI  (Phase 3)
 
 Usage:
     python main.py --path /path/to/repo [options]
 
 Options:
     --path              Repository root to analyse (required).
-    --save-snapshot     Overwrite baseline snapshot.
-    --no-snapshot       Skip snapshot loading and saving.
+    --save-snapshot     Overwrite baseline / append to history.
+    --no-snapshot       Skip all history loading and saving.
     --output-env        Write .drift_env for GitHub Actions.
     --pr-comment        Post/update PR comment via GitHub API.
-    --max-drop          Max score drop before CI fails (default: 5).
+    --max-drop          Max index drop vs baseline before CI fails (default: 5).
 """
 
 import argparse
@@ -24,22 +24,20 @@ from config import load_config
 from scanner import scan_repository, file_path_to_module_name
 from graph_builder import build_dependency_graph
 from metrics import detect_cycles, compute_coupling_metrics
-from drift import detect_boundary_violations
+from drift import detect_boundary_violations, partition_cycles
 from complexity import compute_complexity_map, compute_complexity_delta, summarise_complexity
 from duplication import detect_duplicates
 from drift_index import calculate_drift_index
-from snapshot import load_snapshot, save_snapshot, compare_snapshots
+from history import (
+    load_history, load_baseline, append_run, save_history,
+    build_full_snapshot, compute_trend_analytics, compare_with_baseline,
+    _run_record,
+)
 from utils import (
-    write_json_report,
-    print_header,
-    print_drift_index,
-    print_cycles,
-    print_high_coupling,
-    print_violations,
-    print_duplicates,
-    print_complexity,
-    print_comparison,
-    print_index_breakdown,
+    write_json_report, print_header, print_drift_index, print_trend,
+    print_cycles, print_approved_exceptions, print_high_coupling,
+    print_violations, print_duplicates, print_complexity,
+    print_comparison, print_index_breakdown,
 )
 
 
@@ -48,160 +46,155 @@ def parse_args() -> argparse.Namespace:
         prog="structural-drift",
         description="Analyse architectural drift in a Python repository.",
     )
-    parser.add_argument("--path", required=True, help="Repository root path.")
+    parser.add_argument("--path",          required=True)
     parser.add_argument("--save-snapshot", action="store_true")
-    parser.add_argument("--no-snapshot", action="store_true")
-    parser.add_argument("--output-env", action="store_true")
-    parser.add_argument("--pr-comment", action="store_true")
-    parser.add_argument("--max-drop", type=int, default=5,
-                        help="Max index drop vs baseline before CI fails (default: 5).")
+    parser.add_argument("--no-snapshot",   action="store_true")
+    parser.add_argument("--output-env",    action="store_true")
+    parser.add_argument("--pr-comment",    action="store_true")
+    parser.add_argument("--max-drop",      type=int, default=5)
     return parser.parse_args()
 
 
 def run_analysis(repo_path: str):
-    """Run the full v2 analysis pipeline. Returns all result objects."""
-
-    # Config
+    """Run the full Phase 3 analysis pipeline."""
     config = load_config(repo_path)
     print(f"  Config: ignore_boundaries={sorted(config.ignore_boundaries)}"
-          f"  strict={config.strict_mode}")
+          f"  strict={config.strict_mode}"
+          + (f"  domains={list(config.domains)}" if config.has_domains() else ""))
 
-    # Scan
     print(f"\nScanning: {repo_path}")
     file_paths = scan_repository(repo_path, ignore_test_dirs=config.ignore_test_dirs)
     print(f"  Found {len(file_paths)} Python file(s)")
 
-    # Module map (needed by multiple stages)
     module_map = {fp: file_path_to_module_name(fp) for fp in file_paths}
 
-    # Graph
     print("Building dependency graph...")
     graph = build_dependency_graph(file_paths, repo_path)
 
-    # Metrics
     print("Computing coupling metrics...")
     coupling_metrics = compute_coupling_metrics(
-        graph,
-        high_coupling_percentile=config.high_coupling_percentile,
+        graph, high_coupling_percentile=config.high_coupling_percentile
     )
 
-    # Cycles
     print("Detecting cycles...")
-    cycles = detect_cycles(graph)
+    all_cycles = detect_cycles(graph)
+    active_cycles, approved_cycles = partition_cycles(all_cycles, config)
 
-    # Boundary violations (config-aware)
     print("Detecting boundary violations...")
-    violations = detect_boundary_violations(graph, config)
+    violations, approved_exceptions = detect_boundary_violations(graph, config)
 
-    # Complexity
     print("Estimating complexity...")
     complexity_map = compute_complexity_map(file_paths, repo_path, module_map)
 
-    # Duplication
     print("Detecting duplication...")
     duplicate_pairs = detect_duplicates(
-        file_paths,
-        repo_path,
-        module_map,
+        file_paths, repo_path, module_map,
         threshold=config.duplication_threshold,
         min_lines=config.min_lines_for_duplication,
         max_modules=config.max_modules_for_duplication,
     )
 
     return (
-        config,
-        graph,
-        coupling_metrics,
-        cycles,
-        violations,
-        complexity_map,
-        duplicate_pairs,
+        config, graph, coupling_metrics,
+        active_cycles, approved_cycles,
+        violations, approved_exceptions,
+        complexity_map, duplicate_pairs,
     )
 
 
 def main() -> None:
-    args = parse_args()
+    args      = parse_args()
     repo_path = os.path.realpath(args.path)
 
     try:
         (
-            config,
-            graph,
-            coupling_metrics,
-            cycles,
-            violations,
-            complexity_map,
-            duplicate_pairs,
+            config, graph, coupling_metrics,
+            active_cycles, approved_cycles,
+            violations, approved_exceptions,
+            complexity_map, duplicate_pairs,
         ) = run_analysis(repo_path)
     except ValueError as exc:
         print(f"\n[ERROR] {exc}")
         sys.exit(1)
 
-    # -- Snapshot & complexity delta ------------------------------------------
-    baseline = None
-    comparison = None
+    # ── History & baseline ────────────────────────────────────────────────────
+    history          = {"runs": []}
+    baseline         = None
     baseline_complexity = {}
+    first_run        = True
 
     if not args.no_snapshot:
-        baseline = load_snapshot(repo_path)
+        history  = load_history(repo_path)
+        baseline = load_baseline(repo_path)
         if baseline is not None:
             baseline_complexity = baseline.get("complexity_map", {})
+            first_run = False
         else:
-            print("  No baseline snapshot found — this run will become the baseline.")
+            print("  No baseline found — this run initialises history.")
 
-    # Whether a baseline existed before this run (set before we potentially save one)
-    first_run = (baseline is None) and (not args.no_snapshot)
+    # ── Trend analytics (from existing history, before appending this run) ────
+    trend_analytics = compute_trend_analytics(history)
+    moving_average  = trend_analytics.get("moving_avg")          # 7-run MA
+    previous_index  = history["runs"][-1]["drift_index"] if history["runs"] else None
 
-    complexity_delta = compute_complexity_delta(baseline_complexity, complexity_map)
+    # ── Complexity ────────────────────────────────────────────────────────────
+    complexity_delta   = compute_complexity_delta(baseline_complexity, complexity_map)
     complexity_summary = summarise_complexity(complexity_map, complexity_delta)
 
-    # -- Drift Index ----------------------------------------------------------
-    # On first run: complexity penalty is suppressed (no baseline to delta against).
-    # Cycles, violations, coupling, and duplication are still scored — those are
-    # absolute structural facts, not delta-dependent.
+    # ── Drift Index ───────────────────────────────────────────────────────────
+    # Only active (non-approved) cycles count against the score
     drift_index_result = calculate_drift_index(
-        cycles=cycles,
+        cycles=active_cycles,
         high_coupling_modules=coupling_metrics["high_coupling_modules"],
         duplicate_pairs=duplicate_pairs,
         total_positive_complexity_delta=0 if first_run else complexity_summary["total_positive_delta"],
         total_complexity=complexity_summary["total_complexity"],
         total_modules=coupling_metrics["total_modules"],
         first_run=first_run,
+        moving_average=moving_average,
+        previous_index=previous_index,
     )
 
-    # -- Snapshot comparison --------------------------------------------------
-    if baseline is not None:
-        comparison = compare_snapshots(baseline, {
-            "drift_index":      drift_index_result["drift_index"],
-            "cycles":           cycles,
-            "violations":       violations,
-            "coupling_metrics": coupling_metrics,
-            "duplicate_pairs":  duplicate_pairs,
-            "complexity_map":   complexity_map,
-        })
+    # ── Snapshot comparison ───────────────────────────────────────────────────
+    current_snapshot = build_full_snapshot(
+        drift_index_result=drift_index_result,
+        graph=graph,
+        coupling_metrics=coupling_metrics,
+        cycles=active_cycles,
+        violations=violations,
+        duplicate_pairs=duplicate_pairs,
+        complexity_summary=complexity_summary,
+        complexity_map=complexity_map,
+        config_dict=config.to_dict(),
+    )
+    comparison = compare_with_baseline(baseline, current_snapshot)
 
-    # -- Save snapshot --------------------------------------------------------
-    if not args.no_snapshot and (args.save_snapshot or baseline is None):
-        snap_path = save_snapshot(
-            root_path=repo_path,
-            graph=graph,
+    # ── Append run to history + save ─────────────────────────────────────────
+    if not args.no_snapshot and (args.save_snapshot or first_run):
+        run_rec = _run_record(
+            drift_index=drift_index_result["drift_index"],
+            cycles=active_cycles,
             coupling_metrics=coupling_metrics,
-            cycles=cycles,
-            violations=violations,
             duplicate_pairs=duplicate_pairs,
             complexity_summary=complexity_summary,
-            complexity_map=complexity_map,
-            drift_index_result=drift_index_result,
-            config_dict=config.to_dict(),
+            drift_components=drift_index_result["components"],
+            violations=violations,
         )
-        print(f"  Snapshot saved -> {snap_path}")
+        updated_history = append_run(repo_path, run_rec)
+        hist_path = save_history(repo_path, updated_history, current_snapshot)
+        print(f"  History saved -> {hist_path}  ({len(updated_history['runs'])} runs)")
 
-    # -- Output env (GitHub Actions) ------------------------------------------
+    # Recompute trend analytics after appending so the current run is included
+    # when reporting (only matters for the first run of a session)
+    if not first_run or args.save_snapshot:
+        trend_analytics = compute_trend_analytics(load_history(repo_path))
+
+    # ── Output env (GitHub Actions) ───────────────────────────────────────────
     if args.output_env:
         index_delta = comparison["index_delta"] if comparison else ""
         lines = [
             f"drift_score={drift_index_result['drift_index']}",
-            f"cycles_count={len(cycles)}",
+            f"cycles_count={len(active_cycles)}",
             f"violations_count={len(violations)}",
             f"score_delta={index_delta}",
         ]
@@ -209,7 +202,7 @@ def main() -> None:
             "\n".join(lines) + "\n", encoding="utf-8"
         )
 
-    # -- PR comment -----------------------------------------------------------
+    # ── PR comment ────────────────────────────────────────────────────────────
     should_fail = False
     if args.pr_comment:
         from pr_comment import post_pr_comment
@@ -218,42 +211,57 @@ def main() -> None:
             drift_index=drift_index_result["drift_index"],
             severity=drift_index_result["severity"],
             index_delta=index_delta,
-            cycles=cycles,
+            cycles=active_cycles,
+            approved_cycles=approved_cycles,
             violations=violations,
+            approved_exceptions=approved_exceptions,
             coupling_metrics=coupling_metrics,
             duplicate_pairs=duplicate_pairs,
             complexity_summary=complexity_summary,
-            drift_components=drift_index_result["components"],
+            drift_result=drift_index_result,
             comparison=comparison,
+            trend_analytics=trend_analytics,
             first_run=first_run,
             max_drop=args.max_drop,
         )
 
-    # -- JSON report ----------------------------------------------------------
+    # ── JSON report ───────────────────────────────────────────────────────────
     report_path = write_json_report(
         output_path=repo_path,
         graph=graph,
         coupling_metrics=coupling_metrics,
-        cycles=cycles,
+        cycles=active_cycles,
+        approved_cycles=approved_cycles,
         violations=violations,
+        approved_exceptions=approved_exceptions,
         duplicate_pairs=duplicate_pairs,
         complexity_summary=complexity_summary,
         drift_index_result=drift_index_result,
         comparison=comparison,
+        trend_analytics=trend_analytics,
     )
 
-    # -- Terminal output ------------------------------------------------------
+    # ── Terminal output ───────────────────────────────────────────────────────
     print_header("Structural Drift Report")
 
     if first_run:
         print("\n  ℹ️  Baseline initialized. No delta comparison available.")
         print("     Complexity penalty suppressed on first run.")
 
-    print_drift_index(drift_index_result["drift_index"], drift_index_result["severity"], comparison)
+    print_drift_index(
+        drift_index_result["drift_index"],
+        drift_index_result["severity"],
+        comparison,
+        drift_index_result,
+        trend_analytics,
+    )
     print(f"\n  Modules: {coupling_metrics['total_modules']}  "
           f"Edges: {coupling_metrics['total_edges']}  "
           f"Avg deps: {coupling_metrics['avg_dependencies']}")
-    print_cycles(cycles)
+
+    print_trend(trend_analytics)
+    print_approved_exceptions(approved_cycles, approved_exceptions)
+    print_cycles(active_cycles)
     print_high_coupling(
         coupling_metrics["high_coupling_modules"],
         coupling_metrics["high_coupling_percentile"],
@@ -265,7 +273,10 @@ def main() -> None:
     if comparison is not None:
         print_comparison(comparison)
 
-    print_index_breakdown(drift_index_result["components"])
+    print_index_breakdown(
+        drift_index_result["components"],
+        drift_index_result.get("size_scale", 1.0),
+    )
     print(f"\nJSON report -> {report_path}\n")
 
     if should_fail:
