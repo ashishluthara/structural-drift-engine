@@ -17,8 +17,12 @@ COPY --chown=drift:drift \
     graph_builder.py \
     metrics.py \
     drift.py \
+    drift_index.py \
     snapshot.py \
     utils.py \
+    config.py \
+    complexity.py \
+    duplication.py \
     pr_comment.py \
     entrypoint.sh \
     ./

@@ -149,6 +149,44 @@ def _section_changes(comparison: dict) -> str:
     return "**Changes this PR:** " + " · ".join(parts) + "\n"
 
 
+WHY_THIS_MATTERS = {
+    "cycles":      "Circular dependencies increase change fragility — modifying one module can break any module in the cycle.",
+    "coupling":    "High coupling makes modules harder to test, replace, or understand in isolation.",
+    "duplication": "Duplicate logic diverges over time. Bugs fixed in one copy silently persist in the other.",
+    "violations":  "Cross-boundary imports erode module ownership and create hidden coupling between teams.",
+}
+
+
+def _section_why_this_matters(
+    cycles: list,
+    high_coupling: list,
+    duplicates: list,
+    violations: list,
+) -> str:
+    """
+    Emit a short educational 'Why This Matters' block for whichever
+    signals are actually present. Empty if everything is clean.
+    """
+    reasons = []
+    if cycles:
+        reasons.append(WHY_THIS_MATTERS["cycles"])
+    if high_coupling:
+        reasons.append(WHY_THIS_MATTERS["coupling"])
+    if duplicates:
+        reasons.append(WHY_THIS_MATTERS["duplication"])
+    if violations:
+        reasons.append(WHY_THIS_MATTERS["violations"])
+
+    if not reasons:
+        return ""
+
+    lines = ["**Why this matters:**"]
+    for r in reasons:
+        lines.append(f"- {r}")
+    lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def build_comment_body(
     drift_index: int,
     severity: str,
@@ -211,6 +249,7 @@ def build_comment_body(
         body += "✓ None detected\n"
 
     body += f"""
+{_section_why_this_matters(cycles, coupling_metrics.get('high_coupling_modules', []), duplicate_pairs, violations)}
 <details>
 <summary>Drift Index breakdown</summary>
 

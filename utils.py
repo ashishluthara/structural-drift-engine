@@ -74,8 +74,8 @@ def print_cycles(cycles: list) -> None:
         print("  - " + " → ".join(cycle))
 
 
-def print_high_coupling(modules: list, percentile_threshold: int) -> None:
-    print(f"\nHigh Coupling Modules  (above {percentile_threshold:.0f}th percentile threshold):")
+def print_high_coupling(modules: list, high_coupling_percentile: int) -> None:
+    print(f"\nHigh Coupling Modules  (above {high_coupling_percentile}th percentile):")
     if not modules:
         print("  ✓ None detected")
         return

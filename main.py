@@ -165,6 +165,7 @@ def main() -> None:
         duplicate_pairs=duplicate_pairs,
         total_positive_complexity_delta=0 if first_run else complexity_summary["total_positive_delta"],
         total_complexity=complexity_summary["total_complexity"],
+        total_modules=coupling_metrics["total_modules"],
         first_run=first_run,
     )
 
@@ -255,7 +256,7 @@ def main() -> None:
     print_cycles(cycles)
     print_high_coupling(
         coupling_metrics["high_coupling_modules"],
-        coupling_metrics["percentile_threshold"],
+        coupling_metrics["high_coupling_percentile"],
     )
     print_violations(violations)
     print_duplicates(duplicate_pairs)

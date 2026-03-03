@@ -134,7 +134,8 @@ def compute_coupling_metrics(
         "total_edges": total_edges,
         "avg_dependencies": avg_dependencies,
         "high_coupling_modules": high_coupling_modules,
-        "percentile_threshold": threshold,
+        "percentile_threshold": threshold,        # dep count at the threshold (e.g. 3.0)
+        "high_coupling_percentile": high_coupling_percentile,  # configured level (e.g. 85)
     }
 
 

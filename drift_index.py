@@ -58,6 +58,7 @@ def calculate_drift_index(
     duplicate_pairs: list[dict],
     total_positive_complexity_delta: int,
     total_complexity: int = 0,
+    total_modules: int = 0,
     first_run: bool = False,
 ) -> dict:
     """
@@ -86,11 +87,27 @@ def calculate_drift_index(
     # Circular dependency penalty: 15 per cycle, cap 40
     circular_penalty = min(40, 15 * n_cycles)
 
-    # Coupling penalty: avg percentile of flagged modules mapped to 0-20
+    # Coupling penalty — graduated by fraction of codebase affected.
+    #
+    # Old formula: min(20, ceil(avg_percentile/100 * 20))
+    # Problem:     0 flagged → 0; 1 flagged at 94th pct → 19.  Binary cliff.
+    #
+    # New formula: min(20, round((n_flagged/total) * (avg_pct/100) * 20 * 2))
+    # Behaviour:
+    #   1/18 modules at 94th pct  →  round(0.055 * 0.94 * 40) = 2   (≤2pt target)
+    #   4/10 modules at 90th pct  →  round(0.40  * 0.90 * 40) = 14  (meaningful)
+    #   10/20 modules at 90th pct →  round(0.50  * 0.90 * 40) = 18  (severe)
+    #
+    # The ×2 factor ensures a genuinely widespread coupling problem can still
+    # reach the cap of 20, while a single outlier module scores ≤2.
+    total_modules_count = max(1, total_modules)
+
     if high_coupling_modules:
         percentiles    = [m.get("percentile", 85) for m in high_coupling_modules]
         avg_percentile = sum(percentiles) / len(percentiles)
-        coupling_penalty = min(20, math.ceil((avg_percentile / 100) * 20))
+        n_flagged      = len(high_coupling_modules)
+        raw_penalty    = (n_flagged / total_modules_count) * (avg_percentile / 100) * 20 * 2
+        coupling_penalty = min(20, round(raw_penalty))
     else:
         avg_percentile   = 0.0
         coupling_penalty = 0
@@ -132,7 +149,7 @@ def calculate_drift_index(
                 "value":          coupling_penalty,
                 "count":          len(high_coupling_modules),
                 "avg_percentile": round(avg_percentile, 1),
-                "weight":         "(avg_percentile / 100) x 20, cap 20",
+                "weight":         "(n_flagged/total) x (avg_pct/100) x 40, cap 20",
             },
             "duplication_penalty": {
                 "value":  duplication_penalty,
